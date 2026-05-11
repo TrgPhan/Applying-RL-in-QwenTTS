@@ -62,8 +62,8 @@ class GwenTalker(nn.Module):
         self.codec_embedding = nn.Embedding(3072, 1024)
 
         # Text projection: 2048 → 1024 (2-layer MLP from config)
-        self.text_proj_fc1 = nn.Linear(2048, 1024, bias=False)
-        self.text_proj_fc2 = nn.Linear(1024, 1024, bias=False)
+        self.text_proj_fc1 = nn.Linear(2048, 1024, bias=True)
+        self.text_proj_fc2 = nn.Linear(1024, 1024, bias=True)
 
         # --- Qwen3 transformer (trainable via LoRA) ---
         qwen_cfg = Qwen3Config(
@@ -134,9 +134,16 @@ class GwenTalker(nn.Module):
         w = _get("talker.text_projection.linear_fc1.weight")
         if w is not None:
             self.text_proj_fc1.weight = nn.Parameter(w.to(dtype), requires_grad=False)
+        b = _get("talker.text_projection.linear_fc1.bias")
+        if b is not None:
+            self.text_proj_fc1.bias = nn.Parameter(b.to(dtype), requires_grad=False)
+            
         w = _get("talker.text_projection.linear_fc2.weight")
         if w is not None:
             self.text_proj_fc2.weight = nn.Parameter(w.to(dtype), requires_grad=False)
+        b = _get("talker.text_projection.linear_fc2.bias")
+        if b is not None:
+            self.text_proj_fc2.bias = nn.Parameter(b.to(dtype), requires_grad=False)
 
         # Codec head
         w = _get("talker.codec_head.weight")

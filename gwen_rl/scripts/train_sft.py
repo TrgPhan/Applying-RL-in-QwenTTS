@@ -2,7 +2,8 @@
 gwen_rl/scripts/train_sft.py
 Gate 1: SFT Continuation for gwen-tts-0.6B.
 
-Loss: L = CE(codec_tokens) + beta_kl * KL(pi_theta || pi_ref)
+Loss: L = CE(codec_tokens)
+      (KL anchor removed — counterproductive for small-dataset speaker adaptation)
 
 Input to model:
   text_ids  [B, T_text]  — Qwen3 BPE tokens from metadata.csv "text"
@@ -30,7 +31,7 @@ from tqdm import tqdm
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from gwen_rl.utils.model import build_model
+from gwen_rl.utils.model import build_model, CODEC_BOS_ID
 from gwen_rl.utils.data import TTSRLDataset, collate_fn
 from gwen_rl.utils.checkpoint import save_checkpoint, load_checkpoint
 from gwen_rl.utils.log import init_logging, log_metrics, close_logging
@@ -48,7 +49,7 @@ DEFAULT_CFG = {
     "log_dir":    "logs",
 
     "lr": 5e-5,
-    "beta_kl": 0.02,
+    "beta_kl": 0.0,
     "grad_clip": 1.0,
     "warmup_steps": 200,
     "batch_size": 1,
@@ -75,14 +76,19 @@ def _has_real_codec(dataset: TTSRLDataset) -> bool:
     return "codec_ids" in sample and isinstance(sample["codec_ids"], torch.Tensor)
 
 
-def tokenize_batch(batch, tokenizer, codec_ids_batch, max_seq_len, device):
+def tokenize_batch(batch, tokenizer, max_seq_len, device):
     """
     Tokenize text → text_ids [B, T_text].
-    codec_ids_batch: list of 1D LongTensors (real Mimi tokens).
+    Codec_ids are taken directly from the batch (aligned by DataLoader).
     Returns (text_ids, codec_ids) both on `device`.
     """
+    # Apply Qwen chat template format (critical for gwen-tts base model)
+    formatted_texts = [
+        f"<|im_start|>user\n{t}<|im_end|>\n<|im_start|>assistant\n"
+        for t in batch["text"]
+    ]
     encoded = tokenizer(
-        batch["text"],
+        formatted_texts,
         return_tensors="pt",
         padding=True,
         truncation=True,
@@ -90,21 +96,27 @@ def tokenize_batch(batch, tokenizer, codec_ids_batch, max_seq_len, device):
     )
     text_ids = encoded["input_ids"].to(device)
 
-    # Pad/truncate codec tokens to max_seq_len
+    # Get codec_ids from the batch (correctly aligned by collate_fn)
+    codec_ids_batch = batch["codec_ids"]  # list of [T_i] LongTensors
+
+    # Pad/truncate codec tokens to max_seq_len, prepend CODEC_BOS_ID
     B = len(codec_ids_batch)
-    T = min(max_seq_len, max(c.size(0) for c in codec_ids_batch))
+    T = min(max_seq_len, max(c.size(0) + 1 for c in codec_ids_batch))
     codec_tensor = torch.zeros(B, T, dtype=torch.long, device=device)
     for i, c in enumerate(codec_ids_batch):
-        length = min(c.size(0), T)
-        codec_tensor[i, :length] = c[:length].to(device)
+        c_with_bos = torch.cat([
+            torch.tensor([CODEC_BOS_ID], dtype=c.dtype, device=c.device), c
+        ])
+        length = min(c_with_bos.size(0), T)
+        codec_tensor[i, :length] = c_with_bos[:length].to(device)
 
     return text_ids, codec_tensor
 
 
-def sft_step(model, tokenizer, batch, codec_ids_batch, cfg, device):
-    """Single SFT step: CE loss + KL anchor."""
+def sft_step(model, tokenizer, batch, cfg, device):
+    """Single SFT step: CE loss only (right now i will use no KL anchor — small dataset)."""
     text_ids, codec_ids = tokenize_batch(
-        batch, tokenizer, codec_ids_batch, cfg["max_seq_len"], device
+        batch, tokenizer, cfg["max_seq_len"], device
     )
 
     # Forward: logits [B, T_codec, 3072]
@@ -123,42 +135,39 @@ def sft_step(model, tokenizer, batch, codec_ids_batch, cfg, device):
         reduction="mean",
     )
 
-    # KL divergence with frozen reference (LoRA disabled)
-    with torch.amp.autocast("cuda", dtype=torch.float16, enabled=(device == "cuda")):
-        ref_logits = model.get_ref_logits(text_ids, codec_ids).float()
-    ref_shift = ref_logits[:, :-1, :].contiguous()
+    # Optional KL divergence with frozen reference (LoRA disabled)
+    beta_kl = cfg.get("beta_kl", 0.0)
+    kl_val = 0.0
+    total = ce_loss
 
-    kl = F.kl_div(
-        F.log_softmax(shift_logits, dim=-1),
-        F.log_softmax(ref_shift, dim=-1),
-        reduction="batchmean",
-        log_target=True,
-    )
+    if beta_kl > 0:
+        with torch.amp.autocast("cuda", dtype=torch.float16, enabled=(device == "cuda")):
+            ref_logits = model.get_ref_logits(text_ids, codec_ids).float()
+        ref_shift = ref_logits[:, :-1, :].contiguous()
 
-    total = ce_loss + cfg["beta_kl"] * kl
-    return {"total": total, "ce": ce_loss.detach().item(), "kl": kl.detach().item()}
+        kl = F.kl_div(
+            F.log_softmax(shift_logits, dim=-1),
+            F.log_softmax(ref_shift, dim=-1),
+            reduction="batchmean",
+            log_target=True,
+        )
+        kl_val = kl.detach().item()
+        total = ce_loss + beta_kl * kl
+
+    return {"total": total, "ce": ce_loss.detach().item(), "kl": kl_val}
 
 
 @torch.no_grad()
-def validate(model, tokenizer, val_loader, val_dataset, cfg, device, max_batches=None):
+def validate(model, tokenizer, val_loader, cfg, device, max_batches=None):
     model.eval()
     total_ce, n = 0.0, 0
     limit = max_batches or len(val_loader)
     for i, batch in enumerate(val_loader):
         if i >= limit:
             break
-        # Gather codec_ids from dataset items directly (val set may be tiny)
-        codec_ids_batch = [
-            val_dataset[i * val_loader.batch_size + j].get(
-                "codec_ids", torch.zeros(4, dtype=torch.long)
-            )
-            for j in range(len(batch["text"]))
-            if i * val_loader.batch_size + j < len(val_dataset)
-        ]
-        if not codec_ids_batch:
-            continue
+        # codec_ids come from the batch directly (correctly aligned)
         text_ids, codec_ids = tokenize_batch(
-            batch, tokenizer, codec_ids_batch, cfg["max_seq_len"], device
+            batch, tokenizer, cfg["max_seq_len"], device
         )
         with torch.amp.autocast("cuda", dtype=torch.float16, enabled=(device == "cuda")):
             logits = model(text_ids, codec_ids).float()
@@ -227,41 +236,37 @@ def train(cfg):
     os.makedirs(cfg["save_dir"], exist_ok=True)
     resume_dir = os.path.join(cfg["save_dir"], "latest")
     start_step = 0
+    best_val_ppl = float("inf")
     if os.path.exists(resume_dir):
-        start_step = load_checkpoint(model, optimizer, None, resume_dir)
+        start_step, best_val_ppl = load_checkpoint(model.transformer, optimizer, None, resume_dir)
 
     init_logging(cfg["log_dir"], run_name="gate1_sft")
     model.train()
 
-    data_iter = cycle(enumerate(train_loader))
+    data_iter = cycle(iter(train_loader))
     accum = {"total": 0.0, "ce": 0.0, "kl": 0.0}
-    best_val_ppl = float("inf")
     patience_counter = 0
     patience = cfg.get("early_stop_patience", 10)
 
     pbar = tqdm(range(start_step, cfg["max_steps"]), desc="[sft]", dynamic_ncols=True)
     for step in pbar:
-        # LR warmup (linear)
-        lr_now = cfg["lr"] * min(1.0, (step + 1) / max(cfg["warmup_steps"], 1))
+        # LR schedule: Linear warmup + Cosine decay
+        warmup = max(cfg["warmup_steps"], 1)
+        if step < warmup:
+            lr_now = cfg["lr"] * ((step + 1) / warmup)
+        else:
+            progress = (step - warmup) / max(1, cfg["max_steps"] - warmup)
+            lr_now = cfg["lr"] * 0.5 * (1.0 + math.cos(math.pi * progress))
+            # Keep a minimum LR floor
+            lr_now = max(lr_now, cfg["lr"] * 0.05)
+            
         for pg in optimizer.param_groups:
             pg["lr"] = lr_now
 
-        idx, batch = next(data_iter)
-
-        # Gather real codec_ids (or generate random fallback)
-        if has_codec:
-            codec_ids_batch = [
-                train_ds[i].get("codec_ids", torch.zeros(4, dtype=torch.long))
-                for i in range(len(batch["text"]))
-            ]
-        else:
-            T_codec = min(cfg["max_seq_len"], 32)
-            codec_ids_batch = [
-                torch.randint(0, 2048, (T_codec,)) for _ in range(len(batch["text"]))
-            ]
+        batch = next(data_iter)
 
         try:
-            losses = sft_step(model, tokenizer, batch, codec_ids_batch, cfg, device)
+            losses = sft_step(model, tokenizer, batch, cfg, device)
         except RuntimeError as e:
             if "out of memory" in str(e).lower():
                 torch.cuda.empty_cache()
@@ -298,7 +303,7 @@ def train(cfg):
 
         # Validation + Early Stopping
         if step > 0 and step % cfg["val_every"] == 0:
-            val_m = validate(model, tokenizer, val_loader, val_ds, cfg, device)
+            val_m = validate(model, tokenizer, val_loader, cfg, device)
             log_metrics(step, val_m)
             ppl = val_m["val_ppl"]
             if ppl < best_val_ppl:

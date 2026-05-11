@@ -38,6 +38,7 @@ def collate_fn(batch: List[Dict]) -> Dict:
     Collate a batch of TTS samples.
     target_wav is padded to max length.
     Strings are kept as lists (not tensored).
+    codec_ids are kept as a list of variable-length tensors.
     """
     texts = [x["text"] for x in batch]
     ref_texts = [x["ref_text"] for x in batch]
@@ -53,6 +54,9 @@ def collate_fn(batch: List[Dict]) -> Dict:
         padded[i, : w.size(0)] = w
         wav_lens[i] = w.size(0)
 
+    # Pass codec_ids through (variable-length, kept as list)
+    codec_ids = [x.get("codec_ids", torch.zeros(4, dtype=torch.long)) for x in batch]
+
     return {
         "text": texts,
         "ref_text": ref_texts,
@@ -60,4 +64,5 @@ def collate_fn(batch: List[Dict]) -> Dict:
         "target_wav": padded,           # [B, T_max]
         "wav_lens": wav_lens,           # [B]
         "duration": durations,          # [B]
+        "codec_ids": codec_ids,         # list of [T_i] LongTensors
     }
