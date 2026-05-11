@@ -20,15 +20,15 @@ save_dir:   "checkpoints/gate1"
 log_dir:    "logs"
 
 # Optimizer
-lr: 5.0e-5           # Conservative LR for stable convergence on 123-sample dataset
-beta_kl: 0.0         # Disabled: KL anchor prevents adaptation with small dataset
+lr: 2.0e-5           # Lower LR for stability near convergence
+beta_kl: 0.01        # Re-enabled: KL anchor prevents the model from breaking its base patterns
 grad_clip: 1.0
 warmup_steps: 200    # Longer warmup to prevent shock
 
 # Batch (4GB VRAM: batch=1, accum=8 → effective batch=8)
 batch_size: 1
 gradient_accum_steps: 8
-max_seq_len: 128     # 128 codec frames @ 12.5fps ≈ 10s max per sample
+max_seq_len: 160     # Increased slightly (12.8s) to cover more audio context
 
 # Training schedule
 max_steps: 10000

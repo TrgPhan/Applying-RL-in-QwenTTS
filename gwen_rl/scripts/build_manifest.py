@@ -1,20 +1,6 @@
 """
 gwen_rl/scripts/build_manifest.py
 Convert data/metadata.csv (audio, text, source) → processed dataset.
-
-Format of metadata.csv:
-    audio,text,source
-    00000001.wav,"text here",0
-
-Since this is self-reference voice cloning:
-    ref_audio = target_audio (same file)
-    ref_text  = text (same transcript)
-
-Usage:
-    py -3 -m gwen_rl.scripts.build_manifest \\
-        --csv     data/metadata.csv \\
-        --audio_dir data/audio \\
-        --out_dir data/processed
 """
 
 import os
@@ -26,7 +12,7 @@ import torch
 import torchaudio
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from gwen_rl.utils.audio import load_audio, is_valid_audio, SR_TARGET
+from gwen_rl.utils.audio import load_audio, is_valid_audio, compute_snr_db, SR_TARGET
 
 
 def main():
@@ -37,9 +23,9 @@ def main():
     parser.add_argument("--val_ratio",  type=float, default=0.05)
     parser.add_argument("--test_ratio", type=float, default=0.05)
     parser.add_argument("--seed",       type=int,   default=42)
-    parser.add_argument("--min_snr",    type=float, default=5.0,  help="SNR threshold dB (lower=keep more)")
-    parser.add_argument("--min_dur",    type=float, default=1.5)
-    parser.add_argument("--max_dur",    type=float, default=20.0)
+    parser.add_argument("--min_snr",    type=float, default=0.0,  help="SNR threshold dB")
+    parser.add_argument("--min_dur",    type=float, default=2.0)
+    parser.add_argument("--max_dur",    type=float, default=25.0)
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -52,25 +38,35 @@ def main():
     random.seed(args.seed)
     random.shuffle(rows)
 
-    processed, skipped = [], 0
+    processed = []
+    skip_reasons = {"not_found": 0, "too_short": 0, "too_long": 0, "low_snr": 0, "error": 0}
+
     for i, row in enumerate(rows):
         audio_file = row["audio"].strip()
         text = row["text"].strip()
         audio_path = os.path.join(args.audio_dir, audio_file)
 
         if not os.path.exists(audio_path):
-            skipped += 1
+            skip_reasons["not_found"] += 1
             continue
 
         try:
             wav = load_audio(audio_path, SR_TARGET)
-        except Exception as e:
-            skipped += 1
+        except Exception:
+            skip_reasons["error"] += 1
             continue
 
-        if not is_valid_audio(wav, SR_TARGET, min_dur=args.min_dur,
-                              max_dur=args.max_dur, min_snr_db=args.min_snr):
-            skipped += 1
+        dur = wav.size(0) / SR_TARGET
+        if dur < args.min_dur:
+            skip_reasons["too_short"] += 1
+            continue
+        if dur > args.max_dur:
+            skip_reasons["too_long"] += 1
+            continue
+        
+        snr = compute_snr_db(wav)
+        if snr < args.min_snr:
+            skip_reasons["low_snr"] += 1
             continue
 
         processed.append({
@@ -78,17 +74,27 @@ def main():
             "ref_text":       text,          # self-reference
             "ref_audio_path": audio_path,    # same file as target
             "target_wav":     wav,           # [T] float32 @ 24kHz
-            "duration":       wav.size(0) / SR_TARGET,
+            "duration":       dur,
             "audio_file":     audio_file,
         })
 
         if (i + 1) % 200 == 0:
-            print(f"  Processed {i+1}/{len(rows)}, kept {len(processed)}, skipped {skipped}")
+            kept = len(processed)
+            skipped = sum(skip_reasons.values())
+            print(f"  Processed {i+1}/{len(rows)}, kept {kept}, skipped {skipped}")
 
-    print(f"[build_manifest] Kept {len(processed)} / {len(rows)} (skipped {skipped})")
+    print(f"[build_manifest] Done processing.")
+    print(f"  - Kept: {len(processed)}")
+    for reason, count in skip_reasons.items():
+        if count > 0:
+            print(f"  - Skipped ({reason}): {count}")
 
     # Split
     n = len(processed)
+    if n == 0:
+        print("[error] No samples kept! Check your audio paths and duration filters.")
+        return
+
     n_test = max(1, int(n * args.test_ratio))
     n_val  = max(1, int(n * args.val_ratio))
     n_train = n - n_val - n_test

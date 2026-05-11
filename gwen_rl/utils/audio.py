@@ -53,7 +53,7 @@ def is_valid_audio(
     wav: torch.Tensor,
     sr: int,
     min_dur: float = 2.0,
-    max_dur: float = 15.0,
+    max_dur: float = 30.0,
     min_snr_db: float = 15.0,
 ) -> bool:
     """Return True if wav passes duration and SNR filters."""

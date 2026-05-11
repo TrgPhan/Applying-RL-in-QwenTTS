@@ -20,7 +20,7 @@ from typing import List, Dict
 
 
 class TTSRLDataset(Dataset):
-    def __init__(self, data_path: str, max_dur: float = 12.0):
+    def __init__(self, data_path: str, max_dur: float = 35.0):
         self.items: List[Dict] = torch.load(data_path, weights_only=False)
         # Secondary filter in case preprocess missed some
         self.items = [x for x in self.items if x["duration"] <= max_dur]
