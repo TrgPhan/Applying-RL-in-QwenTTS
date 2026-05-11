@@ -1,0 +1,31 @@
+# .dockerignore
+# Don't copy large binary/data files into image
+
+# Data (mount at runtime instead)
+data/
+checkpoints/
+logs/
+
+# Old KD-VC code (not needed)
+KD-VC/
+experiments/
+scripts/
+rewards/
+utils/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Misc
+*.log
+*.pt
+*.pth
+.git/
+.gemini/
+README_DRPO.md
+smoke_test.py
+test_imports.py
+fix_*.py

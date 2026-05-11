@@ -1,0 +1,54 @@
+# Gate 3: GRPO Full (WER + SIM + Length + Entropy)
+# MO-GRPO multi-reward normalization
+
+model_id: "g-group-ai-lab/gwen-tts-0.6B"
+
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+lora_checkpoint: "checkpoints/gate2/best"   # load Gate 2 adapter
+
+train_path: "data/processed/train.pt"
+val_path: "data/processed/val.pt"
+save_dir: "checkpoints/gate3"
+log_dir: "logs"
+
+whisper_size: "tiny"
+whisper_device: "cpu"
+use_wavlm: true         # CPU-offloaded WavLM speaker similarity
+
+# Optimizer
+lr: 3.0e-7
+beta_kl: 0.03
+grad_clip: 1.0
+warmup_steps: 200
+
+# GRPO / DAPO
+group_size: 2
+epsilon_low: 0.2
+epsilon_high: 0.28
+
+# Reward weights (MO-GRPO: each reward normalized independently)
+alpha_wer: 1.0
+alpha_sim: 1.0
+alpha_len: 0.1
+alpha_ent: 1.0
+lambda_ent: 0.5
+h_target: 1.5
+
+# Batch
+batch_size: 1
+gradient_accum_steps: 16
+max_seq_len: 512
+
+# Generation
+gen_max_new_tokens: 256
+gen_temperature: 0.3
+gen_top_k: 20
+gen_top_p: 0.9
+gen_repetition_penalty: 2.0
+
+# Training schedule
+max_steps: 8000
+val_every: 300
+save_every: 1500

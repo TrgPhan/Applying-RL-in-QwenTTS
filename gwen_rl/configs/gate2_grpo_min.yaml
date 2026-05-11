@@ -1,0 +1,46 @@
+# Gate 2: GRPO Minimal (WER reward only)
+# Optimized for 4GB VRAM
+
+model_id: "g-group-ai-lab/gwen-tts-0.6B"
+
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+lora_checkpoint: "checkpoints/gate1/best"   # load Gate 1 adapter; "" to skip
+
+train_path: "data/processed/train.pt"
+val_path: "data/processed/val.pt"
+save_dir: "checkpoints/gate2"
+log_dir: "logs"
+
+# Whisper reward (CPU to save VRAM; tiny = 150MB)
+whisper_size: "tiny"
+whisper_device: "cpu"
+
+# Optimizer
+lr: 5.0e-7
+beta_kl: 0.05
+grad_clip: 1.0
+warmup_steps: 100
+
+# GRPO / DAPO config
+group_size: 2           # G=2 for 4GB; increase to 4+ with more VRAM
+epsilon_low: 0.2        # standard PPO lower clip
+epsilon_high: 0.28      # DAPO clip-higher (anti entropy collapse)
+
+# Batch
+batch_size: 1
+gradient_accum_steps: 16
+max_seq_len: 512
+
+# Generation (must match inference)
+gen_max_new_tokens: 256
+gen_temperature: 0.3
+gen_top_k: 20
+gen_top_p: 0.9
+gen_repetition_penalty: 2.0
+
+# Training schedule
+max_steps: 5000
+val_every: 200
+save_every: 1000

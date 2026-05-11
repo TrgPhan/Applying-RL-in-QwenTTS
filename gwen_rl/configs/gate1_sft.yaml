@@ -1,0 +1,37 @@
+# Gate 1: SFT Continuation
+# Optimized for 4GB VRAM (RTX A1000 Laptop)
+#
+# Prerequisites:
+#   1. python -m gwen_rl.scripts.build_manifest --csv data/metadata.csv ...
+#   2. python -m gwen_rl.scripts.encode_codec      ← encode audio → real codec tokens
+#   3. python -m gwen_rl.scripts.train_sft --config gwen_rl/configs/gate1_sft.yaml
+
+model_id: "g-group-ai-lab/gwen-tts-0.6B"
+
+# LoRA config
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+
+# Data paths
+train_path: "data/processed/train.pt"
+val_path:   "data/processed/val.pt"
+save_dir:   "checkpoints/gate1"
+log_dir:    "logs"
+
+# Optimizer
+lr: 3.0e-5           # slightly lower than before to avoid overshooting on small dataset
+beta_kl: 0.02
+grad_clip: 1.0
+warmup_steps: 100    # shorter warmup for 123-sample dataset
+
+# Batch (4GB VRAM: batch=1, accum=8 → effective batch=8)
+batch_size: 1
+gradient_accum_steps: 8
+max_seq_len: 128     # 128 codec frames @ 12.5fps ≈ 10s max per sample
+
+# Training schedule
+max_steps: 5000
+val_every: 200        # validate every 200 steps
+save_every: 1000
+early_stop_patience: 8  # stop if val_ppl doesn't improve for 8 consecutive val checks

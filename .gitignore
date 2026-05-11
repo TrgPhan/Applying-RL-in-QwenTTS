@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+
+# Logs and runtime artifacts
+logs/
+*.log
+
+# Large artifacts and datasets
+checkpoints/
+model_cache/
+data/audio/
+data/processed/
+
+# OS files
+.DS_Store
+Thumbs.db
