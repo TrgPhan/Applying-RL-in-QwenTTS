@@ -31,7 +31,7 @@ gradient_accum_steps: 8
 max_seq_len: 160     # Increased slightly (12.8s) to cover more audio context
 
 # Training schedule
-max_steps: 10000
+max_steps: 100000
 val_every: 200        # validate every 200 steps
 save_every: 1000
-early_stop_patience: 30  # generous patience — model now converges properly
+early_stop_patience: 50  # generous patience — model now converges properly
